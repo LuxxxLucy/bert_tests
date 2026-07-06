@@ -1,0 +1,64 @@
+# Models under test. Single source of truth for download.py, bench.py, make_table.py.
+#   name    short name used in CSV rows and --models flags
+#   hf_id   Hugging Face repo id
+#   group   modernbert (8192 ctx) | deberta (512 ctx) | baseline
+#   note    free text
+
+models:
+  # --- ModernBERT-architecture, 8192 context (the long-context candidates) ---
+  - name: ettin-17m
+    hf_id: jhu-clsp/ettin-encoder-17m
+    group: modernbert
+    note: "ModernBERT arch, English"
+  - name: ettin-32m
+    hf_id: jhu-clsp/ettin-encoder-32m
+    group: modernbert
+    note: "ModernBERT arch, English"
+  - name: ettin-68m
+    hf_id: jhu-clsp/ettin-encoder-68m
+    group: modernbert
+    note: "ModernBERT arch, English"
+  - name: ettin-150m
+    hf_id: jhu-clsp/ettin-encoder-150m
+    group: modernbert
+    note: "ModernBERT arch, English"
+  - name: mmbert-small
+    hf_id: jhu-clsp/mmBERT-small
+    group: modernbert
+    note: "multilingual ModernBERT, 1833 langs"
+  - name: mmbert-base
+    hf_id: jhu-clsp/mmBERT-base
+    group: modernbert
+    note: "multilingual ModernBERT, 1833 langs"
+  - name: modernbert-base
+    hf_id: answerdotai/ModernBERT-base
+    group: modernbert
+    note: "English, 149M"
+
+  # --- DeBERTa-v3 family, 512 context (proven-for-classification / safety) ---
+  - name: mdeberta-v3-base
+    hf_id: microsoft/mdeberta-v3-base
+    group: deberta
+    note: "multilingual; Llama Prompt Guard 2 backbone; max_pos=512"
+  - name: deberta-v3-xsmall
+    hf_id: microsoft/deberta-v3-xsmall
+    group: deberta
+    note: "max_pos=512"
+  - name: deberta-v3-small
+    hf_id: microsoft/deberta-v3-small
+    group: deberta
+    note: "max_pos=512"
+  - name: deberta-v3-base
+    hf_id: microsoft/deberta-v3-base
+    group: deberta
+    note: "max_pos=512"
+
+  # --- classic small baselines (carryover from prior benchmark) ---
+  - name: bert-mini
+    hf_id: prajjwal1/bert-mini
+    group: baseline
+    note: "4L/256H, max_pos=512"
+  - name: minilm-l12
+    hf_id: microsoft/MiniLM-L12-H384-uncased
+    group: baseline
+    note: "12L/384H, max_pos=512"
