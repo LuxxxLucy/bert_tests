@@ -163,7 +163,8 @@ def save_dry_report(report, est_full_s, n_threads, backend, warmup, measure, pat
     lines = ["# dry-run report\n",
              f"backend {backend} | threads {n_threads} | full-run iters {warmup} warmup / {measure} measure",
              f"estimated full run: **~{est_full_s/60:.1f} min** "
-             f"(extrapolated from 2/5-iter probes at 128 and 512 tokens; long-length cells are approximate)\n",
+             f"(extrapolated from {warmup}/{measure}-iter probes at 128 and 512 tokens; "
+             f"long-length cells are approximate)\n",
              "| model | params (M) | max_pos | load (s) | mean@128 (ms) | mean@512 (ms) | est. run (s) | status |",
              "|---|--:|--:|--:|--:|--:|--:|---|"]
     for r in report:
@@ -182,8 +183,8 @@ def main():
     ap.add_argument("--backend", default="torch", choices=["torch", "onnx"])
     ap.add_argument("--lengths", type=int, nargs="+", default=None,
                     help="default: full sweep for run, [128,512] probe for dry-run")
-    ap.add_argument("--warmup", type=int, default=10)
-    ap.add_argument("--measure", type=int, default=50)
+    ap.add_argument("--warmup", type=int, default=2)
+    ap.add_argument("--measure", type=int, default=5)
     ap.add_argument("--threads", type=int, default=None, help="torch CPU threads (default: all)")
     ap.add_argument("--dry-run", action="store_true",
                     help="few iters per cell, confirm it runs, estimate full-run time")
@@ -200,7 +201,7 @@ def main():
     print(f"models ({len(picks)}): {[m.name for m in picks]}")
 
     if args.dry_run:
-        dry_w, dry_m = 2, 5
+        dry_w, dry_m = args.warmup, args.measure  # same iters as the actual run
         dry_lengths = args.lengths or DRY_LENGTHS
         full_lengths = args.lengths or LENGTHS
         print(f"lengths (probe): {dry_lengths}")
