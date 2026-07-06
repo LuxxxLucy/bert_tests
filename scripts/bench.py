@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import ROOT, pick  # noqa: E402
 
 LENGTHS = [64, 128, 256, 512, 1024, 2048, 4096, 8192]
+DRY_LENGTHS = [128, 512]  # cheap probe; full-run cost is extrapolated from these
 FILL = "The quick brown fox jumps over the lazy dog. Then it ran away quickly. "
 
 
@@ -158,12 +159,29 @@ def write_csv(rows, path, append):
         w.writerows(rows)
 
 
+def save_dry_report(report, est_full_s, n_threads, backend, warmup, measure, path):
+    lines = ["# dry-run report\n",
+             f"backend {backend} | threads {n_threads} | full-run iters {warmup} warmup / {measure} measure",
+             f"estimated full run: **~{est_full_s/60:.1f} min** "
+             f"(extrapolated from 2/5-iter probes at 128 and 512 tokens; long-length cells are approximate)\n",
+             "| model | params (M) | max_pos | load (s) | mean@128 (ms) | mean@512 (ms) | est. run (s) | status |",
+             "|---|--:|--:|--:|--:|--:|--:|---|"]
+    for r in report:
+        m = r.get("measured", {})
+        lines.append(f"| {r['model']} | {r.get('params_M','')} | {r.get('max_pos','')} | "
+                     f"{r.get('load_s','')} | {m.get(128,'')} | {m.get(512,'')} | "
+                     f"{r.get('est_run_s','')} | {r['status']} |")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--models", default=None, help="comma-separated names; overrides --group")
     ap.add_argument("--group", default="all", help="all | modernbert | deberta | baseline")
     ap.add_argument("--backend", default="torch", choices=["torch", "onnx"])
-    ap.add_argument("--lengths", type=int, nargs="+", default=LENGTHS)
+    ap.add_argument("--lengths", type=int, nargs="+", default=None,
+                    help="default: full sweep for run, [128,512] probe for dry-run")
     ap.add_argument("--warmup", type=int, default=10)
     ap.add_argument("--measure", type=int, default=50)
     ap.add_argument("--threads", type=int, default=None, help="torch CPU threads (default: all)")
@@ -180,33 +198,52 @@ def main():
     print(f"host: {platform.platform()} | {platform.processor() or platform.machine()}")
     print(f"threads: {n_threads} (both torch and onnx) | backend: {args.backend}")
     print(f"models ({len(picks)}): {[m.name for m in picks]}")
-    print(f"lengths: {args.lengths}")
 
     if args.dry_run:
-        dry_w, dry_m = 2, 3
-        print(f"\n[dry-run] {dry_w} warmup / {dry_m} measure per cell; "
-              f"estimating full run at {args.warmup}/{args.measure}")
+        dry_w, dry_m = 2, 5
+        dry_lengths = args.lengths or DRY_LENGTHS
+        full_lengths = args.lengths or LENGTHS
+        print(f"lengths (probe): {dry_lengths}")
+        print(f"\n[dry-run] {dry_w} warmup / {dry_m} measure at {dry_lengths}; "
+              f"estimating full run ({args.warmup}/{args.measure}) over {full_lengths}")
+        report, est_full = [], 0.0
         t_start = time.perf_counter()
-        total_load = 0.0
-        est_full = 0.0
         for spec in picks:
-            rows, load_s = bench_model(spec, args.backend, args.lengths, dry_w, dry_m, n_threads)
-            total_load += load_s
-            for row in rows:
-                per_iter = row["mean_ms"] / 1000
-                est_full += (args.warmup + args.measure) * per_iter
+            try:
+                rows, load_s = bench_model(spec, args.backend, dry_lengths, dry_w, dry_m, n_threads)
+            except Exception as e:  # noqa: BLE001
+                print(f"FAIL {spec.name}: {e!r}")
+                report.append({"model": spec.name, "status": f"FAIL {e.__class__.__name__}"})
+                continue
+            mp = rows[-1]["max_pos"]
+            pts = [(r["target_length"], r["mean_ms"]) for r in rows]
+            vlens = full_lengths if spec.group == "modernbert" else [L for L in full_lengths if L <= mp]
+            if len(pts) >= 2:
+                (x1, y1), (x2, y2) = pts[0], pts[-1]
+                slope = (y2 - y1) / (x2 - x1); inter = y1 - slope * x1
+                per = lambda L: max(0.0, inter + slope * L)  # noqa: E731
+            else:
+                x1, y1 = pts[0]; per = lambda L: y1 * L / x1  # noqa: E731
+            run_s = sum((args.warmup + args.measure) * per(L) / 1000 for L in vlens)
+            est_full += load_s + run_s
+            report.append({"model": spec.name, "params_M": rows[-1]["params_M"], "max_pos": mp,
+                           "load_s": round(load_s, 1), "est_run_s": round(run_s, 1),
+                           "measured": {r["target_length"]: r["mean_ms"] for r in rows},
+                           "status": "ok"})
         dry_s = time.perf_counter() - t_start
-        est_full += total_load  # models reloaded once in the full run
-        print(f"\n[dry-run] pipeline OK in {dry_s:.1f}s.")
-        print(f"[dry-run] estimated FULL run ({args.warmup}/{args.measure}, "
-              f"{len(picks)} models): ~{est_full/60:.1f} min "
-              f"({est_full:.0f}s compute + {total_load:.0f}s load).")
+        out_md = ROOT / "results" / "dryrun.md"
+        save_dry_report(report, est_full, n_threads, args.backend, args.warmup, args.measure, out_md)
+        ok = sum(1 for r in report if r["status"] == "ok")
+        print(f"\n[dry-run] probe done in {dry_s:.0f}s. {ok}/{len(picks)} models ran.")
+        print(f"[dry-run] estimated FULL run: ~{est_full/60:.1f} min. saved -> {out_md}")
         return 0
 
+    lengths = args.lengths or LENGTHS
+    print(f"lengths: {lengths}")
     all_rows = []
     for i, spec in enumerate(picks):
         try:
-            rows, _ = bench_model(spec, args.backend, args.lengths, args.warmup, args.measure, n_threads)
+            rows, _ = bench_model(spec, args.backend, lengths, args.warmup, args.measure, n_threads)
             all_rows += rows
             write_csv(rows, out, append=(i > 0))
         except Exception as e:  # noqa: BLE001

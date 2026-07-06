@@ -3,4 +3,6 @@ __pycache__/
 *.pyc
 .cache/
 onnx_export/
+results/*.csv
+results/*.md
 .DS_Store
