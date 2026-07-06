@@ -59,7 +59,7 @@ def load_tokenizer(hf_id):
 class TorchRunner:
     backend = "torch"
 
-    def __init__(self, hf_id):
+    def __init__(self, hf_id, threads):  # threads set globally on torch
         from transformers import AutoModelForSequenceClassification
         self.tok = load_tokenizer(hf_id)
         self.model = AutoModelForSequenceClassification.from_pretrained(
@@ -75,21 +75,25 @@ class TorchRunner:
 class OnnxRunner:
     backend = "onnx"
 
-    def __init__(self, hf_id):
+    def __init__(self, hf_id, threads):
+        import onnxruntime as ort
         from optimum.onnxruntime import ORTModelForSequenceClassification
         from transformers import AutoConfig
         self.tok = load_tokenizer(hf_id)
         self.cfg = AutoConfig.from_pretrained(hf_id)
+        so = ort.SessionOptions()
+        so.intra_op_num_threads = threads  # match torch; else ORT grabs all cores
+        so.inter_op_num_threads = 1
         self.model = ORTModelForSequenceClassification.from_pretrained(
-            hf_id, export=True, cache_dir=str(ROOT / "onnx_export"))
+            hf_id, export=True, cache_dir=str(ROOT / "onnx_export"), session_options=so)
         self.n_params = 0  # ONNX graph; param count read from torch elsewhere
 
     def run(self, enc):
         self.model(**{k: v for k, v in enc.items()})
 
 
-def make_runner(backend, hf_id):
-    return (OnnxRunner if backend == "onnx" else TorchRunner)(hf_id)
+def make_runner(backend, hf_id, threads):
+    return (OnnxRunner if backend == "onnx" else TorchRunner)(hf_id, threads)
 
 
 COLUMNS = ["backend", "model", "hf_id", "params_M", "max_pos", "threads",
@@ -97,10 +101,10 @@ COLUMNS = ["backend", "model", "hf_id", "params_M", "max_pos", "threads",
            "mean_ms", "throughput_rps", "load_s", "warmup", "measure", "peak_rss_mb"]
 
 
-def bench_model(spec, backend, lengths, warmup, measure):
+def bench_model(spec, backend, lengths, warmup, measure, threads):
     print(f"\n=== {spec.name}  [{backend}/{spec.group}]  {spec.hf_id}")
     t0 = time.perf_counter()
-    r = make_runner(backend, spec.hf_id)
+    r = make_runner(backend, spec.hf_id, threads)
     load_s = time.perf_counter() - t0
     mp = max_pos(r.cfg)
     nprm = round((r.n_params or 0) / 1e6, 2)
@@ -129,7 +133,7 @@ def bench_model(spec, backend, lengths, warmup, measure):
         ms = [x / 1e6 for x in lat]
         rows.append({
             "backend": backend, "model": spec.name, "hf_id": spec.hf_id,
-            "params_M": nprm, "max_pos": mp, "threads": torch.get_num_threads(),
+            "params_M": nprm, "max_pos": mp, "threads": threads,
             "target_length": L, "actual_length": actual,
             "p50_ms": round(pctl(ms, 50), 3), "p95_ms": round(pctl(ms, 95), 3),
             "p99_ms": round(pctl(ms, 99), 3), "mean_ms": round(smean(ms), 3),
@@ -168,13 +172,13 @@ def main():
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
-    if args.threads:
-        torch.set_num_threads(args.threads)
+    n_threads = args.threads or torch.get_num_threads()  # default: all cores
+    torch.set_num_threads(n_threads)
     picks = pick(args.models, args.group)
     out = Path(args.out) if args.out else ROOT / "results" / f"perf_{args.backend}.csv"
 
     print(f"host: {platform.platform()} | {platform.processor() or platform.machine()}")
-    print(f"torch threads: {torch.get_num_threads()} | backend: {args.backend}")
+    print(f"threads: {n_threads} (both torch and onnx) | backend: {args.backend}")
     print(f"models ({len(picks)}): {[m.name for m in picks]}")
     print(f"lengths: {args.lengths}")
 
@@ -186,7 +190,7 @@ def main():
         total_load = 0.0
         est_full = 0.0
         for spec in picks:
-            rows, load_s = bench_model(spec, args.backend, args.lengths, dry_w, dry_m)
+            rows, load_s = bench_model(spec, args.backend, args.lengths, dry_w, dry_m, n_threads)
             total_load += load_s
             for row in rows:
                 per_iter = row["mean_ms"] / 1000
@@ -202,7 +206,7 @@ def main():
     all_rows = []
     for i, spec in enumerate(picks):
         try:
-            rows, _ = bench_model(spec, args.backend, args.lengths, args.warmup, args.measure)
+            rows, _ = bench_model(spec, args.backend, args.lengths, args.warmup, args.measure, n_threads)
             all_rows += rows
             write_csv(rows, out, append=(i > 0))
         except Exception as e:  # noqa: BLE001

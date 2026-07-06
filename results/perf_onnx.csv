@@ -1,0 +1,2 @@
+backend,model,hf_id,params_M,max_pos,threads,target_length,actual_length,p50_ms,p95_ms,p99_ms,mean_ms,throughput_rps,load_s,warmup,measure,peak_rss_mb
+onnx,bert-mini,prajjwal1/bert-mini,0.0,512,2,128,128,1.968,2.318,2.349,2.081,480.45,45.55,2,3,498
